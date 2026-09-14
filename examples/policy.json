@@ -1,0 +1,7 @@
+{
+  "required_platforms": ["flutter", "android", "ios"],
+  "allowed_hosts": ["pub.dev", "pub.dartlang.org", "repo.maven.apache.org", "repo1.maven.org", "dl.google.com", "maven.google.com", "plugins.gradle.org", "cdn.cocoapods.org", "github.com"],
+  "deny": [
+    {"ecosystem": "Pub", "name": "demo_malicious_package", "reason": "演示规则：此名称为虚构测试数据"}
+  ]
+}

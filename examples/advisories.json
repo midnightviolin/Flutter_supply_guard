@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "advisories": [
+    {
+      "id": "LOCAL-DEMO-001",
+      "ecosystem": "CocoaPods",
+      "name": "DemoUnsafePod",
+      "versions": ["1.0.0"],
+      "severity": "critical",
+      "reason": "虚构演示数据；替换成组织审核过的漏洞或恶意库情报"
+    }
+  ]
+}

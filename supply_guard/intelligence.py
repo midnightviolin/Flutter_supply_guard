@@ -53,6 +53,58 @@ def osv_query(payload, fetch=request_json):
     raise ValueError("OSV 分页超限，查询不完整")
 
 
+def osv_query_batch(payloads, fetch=request_json):
+    """Query OSV in batches, then hydrate the compact IDs into full records."""
+    if not payloads:
+        return []
+    pending = [(index, dict(payload)) for index, payload in enumerate(payloads)]
+    found = [[] for _ in payloads]
+    seen = [set() for _ in payloads]
+    for _ in range(100):
+        result = fetch("https://api.osv.dev/v1/querybatch", {"queries": [payload for _, payload in pending]})
+        results = result.get("results")
+        if not isinstance(results, list) or len(results) != len(pending):
+            raise ValueError("OSV batch 返回数量与请求不一致")
+        next_pending = []
+        for (index, payload), item in zip(pending, results):
+            item = mapping(item)
+            vulns = item.get("vulns", [])
+            if not isinstance(vulns, list):
+                raise ValueError("OSV batch vulns 格式错误")
+            for compact in vulns:
+                compact = mapping(compact)
+                advisory_id = compact.get("id")
+                if not isinstance(advisory_id, str) or advisory_id in seen[index]:
+                    continue
+                seen[index].add(advisory_id)
+                found[index].append(advisory_id)
+            token = item.get("next_page_token")
+            if token:
+                if not isinstance(token, str):
+                    raise ValueError("OSV batch 分页 token 无效")
+                continued = dict(payload)
+                continued["page_token"] = token
+                next_pending.append((index, continued))
+        if not next_pending:
+            break
+        pending = next_pending
+    else:
+        raise ValueError("OSV batch 分页超限")
+
+    records = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(fetch, "https://api.osv.dev/v1/vulns/" + quote(advisory_id, safe="")): advisory_id
+                   for ids in found for advisory_id in ids}
+        for future in as_completed(futures):
+            record = mapping(future.result())
+            advisory_id = record.get("id")
+            if not isinstance(advisory_id, str):
+                raise ValueError("OSV 详情缺少漏洞 ID")
+            records[advisory_id] = record
+    return [[records[advisory_id] for advisory_id in ids if not records[advisory_id].get("withdrawn")]
+            for ids in found]
+
+
 def query_for(dep):
     if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", dep.commit):
         return {"commit": dep.commit}
@@ -84,45 +136,54 @@ def online(scan, fetch=request_json):
             continue
         queries.setdefault(json.dumps(query, sort_keys=True), []).append(dep)
     checked = 0
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(osv_query, json.loads(q), fetch): deps for q, deps in queries.items()}
-        for future in as_completed(futures):
-            deps = futures[future]
-            try:
-                records = future.result()
-                checked += len(deps)
-                for dep in deps:
-                    for record in records:
-                        scan.add("KNOWN_VULNERABILITY", severity(record), record.get("summary", record["id"]),
-                                 dep.file, dep.key, advisory=record["id"],
-                                 url="https://osv.dev/vulnerability/" + quote(record["id"], safe=""),
-                                 severity_evidence=record.get("severity", []),
-                                 severity_policy="缺少可识别文本级别时按 high 阻断",
-                                 affected=record.get("affected", []))
-            except (OSError, ValueError, TypeError, KeyError) as exc:
-                for dep in deps:
-                    scan.gap(f"OSV 查询失败 {dep.key}: {type(exc).__name__}", dep.file)
+    payloads = [json.loads(q) for q in queries]
+    dependency_groups = [queries[json.dumps(payload, sort_keys=True)] for payload in payloads]
+    try:
+        batched_records = osv_query_batch(payloads, fetch)
+        for deps, records in zip(dependency_groups, batched_records):
+            checked += len(deps)
+            for dep in deps:
+                for record in records:
+                    scan.add("KNOWN_VULNERABILITY", severity(record), record.get("summary", record["id"]),
+                             dep.file, dep.key, advisory=record["id"],
+                             url="https://osv.dev/vulnerability/" + quote(record["id"], safe=""),
+                             severity_evidence=record.get("severity", []),
+                             severity_policy="缺少可识别文本级别时按 high 阻断",
+                             affected=record.get("affected", []))
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        for deps in dependency_groups:
+            for dep in deps:
+                scan.gap(f"OSV 查询失败 {dep.key}: {type(exc).__name__}", dep.file)
     scan.coverage["osv"] = {"status": "queried", "checked_dependencies": checked,
                             "unique_queries": len(queries)}
 
 
 def pub_hashes(scan, fetch=request_json):
     # Query only the fixed official host; never request a URL supplied by a lockfile.
+    checks = []
     for dep in scan.dependencies:
         if dep.ecosystem != "Pub" or not dep.checksum:
             continue
         if urlsplit(dep.source).hostname not in {"pub.dev", "pub.dartlang.org"}:
             scan.gap(f"私有 Pub 来源未进行官方哈希对照: {dep.key}", dep.file)
             continue
-        try:
-            doc = fetch(f"https://pub.dev/api/packages/{quote(dep.name, safe='')}/versions/{quote(dep.version, safe='')}")
-            actual = doc.get("archive_sha256", "")
-            if not isinstance(actual, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", actual):
-                raise ValueError("API 未返回有效 archive_sha256")
-            if actual.lower() != dep.checksum.lower():
-                scan.add("PUB_HASH_MISMATCH", "critical", "锁文件 SHA-256 与 pub.dev 元数据不一致", dep.file, dep.key)
-        except (OSError, ValueError, TypeError) as exc:
-            scan.gap(f"Pub 官方哈希对照失败 {dep.key}: {type(exc).__name__}", dep.file)
+        checks.append(dep)
+    def check(dep):
+        doc = fetch(f"https://pub.dev/api/packages/{quote(dep.name, safe='')}/versions/{quote(dep.version, safe='')}")
+        actual = doc.get("archive_sha256", "")
+        if not isinstance(actual, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", actual):
+            raise ValueError("API 未返回有效 archive_sha256")
+        return dep, actual
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(check, dep): dep for dep in checks}
+        for future in as_completed(futures):
+            dep = futures[future]
+            try:
+                _, actual = future.result()
+                if actual.lower() != dep.checksum.lower():
+                    scan.add("PUB_HASH_MISMATCH", "critical", "锁文件 SHA-256 与 pub.dev 元数据不一致", dep.file, dep.key)
+            except (OSError, ValueError, TypeError) as exc:
+                scan.gap(f"Pub 官方哈希对照失败 {dep.key}: {type(exc).__name__}", dep.file)
 
 
 def local_advisories(scan, path):

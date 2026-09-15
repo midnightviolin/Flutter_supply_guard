@@ -236,6 +236,14 @@ class Scan:
 
     def scripts(self, path, file):
         content = read_text(path)
+        # Source URLs in comments and documentation are not dependency sources.
+        suffix = path.suffix.lower()
+        if suffix in {".gradle", ".kts"}:
+            code = re.sub(r"(?m)^\s*//.*$", "", content)
+        elif suffix in {".rb", ".podspec", ".sh", ".yaml", ".yml"} or path.name in {"Podfile", "pubspec.yaml", "pubspec_overrides.yaml"}:
+            code = re.sub(r"(?m)#.*$", "", content)
+        else:
+            code = content
         patterns = [
             ("REMOTE_EXEC", "high", r"(?:curl|wget)\b[^\n]*\|\s*(?:sh|bash|zsh)\b", "发现下载后直接执行命令"),
             ("ENCODED_EXEC", "high", r"(?:base64\s+(?:-d|--decode)|eval\s*\()", "发现解码或动态执行模式，需人工核查"),
@@ -246,10 +254,22 @@ class Scan:
             ("INSECURE_REPOSITORY", "high", r"allowInsecureProtocol\s*=\s*true|isAllowInsecureProtocol\s*=\s*true", "仓库允许明文传输"),
         ]
         for rule, level, pattern, message in patterns:
-            for match in re.finditer(pattern, content, re.M):
-                self.add(rule, level, message, file, line=content.count("\n", 0, match.start()) + 1)
-        # Static hints only: Gradle/Ruby are executable languages, not fully resolved here.
-        for source in set(re.findall(r"https?://[^\s\"'<>)}\]]+", content)):
+            for match in re.finditer(pattern, code, re.M):
+                self.add(rule, level, message, file, line=code.count("\n", 0, match.start()) + 1)
+        # Only dependency/source declarations are repository inputs. URLs in library
+        # code are runtime endpoints and must not become source allow-list findings.
+        if path.name == "Podfile":
+            source_text = "\n".join(line for line in code.splitlines()
+                                      if re.search(r"^\s*source\s+['\"]https?://", line))
+        elif suffix in {".gradle", ".kts"}:
+            source_text = "\n".join(line for line in code.splitlines()
+                                      if re.search(r"\b(?:url|maven|repositories|apply\s+from)\b", line))
+        elif suffix == ".podspec" or path.name.endswith(".podspec.json"):
+            source_text = "\n".join(line for line in code.splitlines()
+                                      if re.search(r"(?:s\.source|\"source\"\s*:|:source)", line))
+        else:
+            source_text = ""
+        for source in set(re.findall(r"https?://[^\s\"'<>)}\]]+", source_text)):
             self.source(source, file)
 
     def verification(self, path, file):
@@ -304,7 +324,8 @@ class Scan:
                     if script:
                         if name in {"pubspec.yaml", "pubspec_overrides.yaml"}:
                             mapping(load_yaml(path))
-                        self.scripts(path, file)
+                        if name not in {"pubspec.yaml", "pubspec_overrides.yaml"}:
+                            self.scripts(path, file)
                     if name == "verification-metadata.xml":
                         self.verification(path, file)
                 except (OSError, ValueError, TypeError, KeyError, StopIteration, ET.ParseError, yaml.YAMLError) as exc:

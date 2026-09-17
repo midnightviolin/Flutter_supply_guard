@@ -1,0 +1,4 @@
+interface:
+  display_name: "iOS Dependency Security"
+  short_description: "Scan CocoaPods and SwiftPM supply-chain risks"
+  default_prompt: "Use $ios-dependency-security to scan this iOS project for CocoaPods and SwiftPM dependency risks."

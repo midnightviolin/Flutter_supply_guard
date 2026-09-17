@@ -209,6 +209,12 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(json.loads(output.read_text())["status"], "blocked")
             self.assertEqual(main([str(self.root), "--offline", "--json", str(output)]), 2)
 
+    def test_cli_platform_scope_allows_native_project_without_flutter_files(self):
+        native = self.root / "native"
+        native.mkdir()
+        self.assertEqual(main([str(native), "--scope", "android", "--offline", "--allow-incomplete"]), 1)
+        self.assertEqual(main([str(native), "--scope", "ios", "--offline", "--allow-incomplete"]), 0)
+
     def test_unknown_policy_field_rejected(self):
         with self.assertRaises(ValueError):
             Scan(self.root, {"denny": []})
@@ -225,6 +231,15 @@ class GuardTests(unittest.TestCase):
     def test_namespaced_gradle_metadata(self):
         self.write("android/gradle/verification-metadata.xml", '<verification-metadata xmlns="https://schema.gradle.org/dependency-verification"><components><component><artifact><sha256 value="' + "a" * 64 + '"/></artifact></component></components></verification-metadata>')
         self.assertNotIn("GRADLE_HASH_MISSING", self.rules(Scan(self.root).inventory()))
+
+    def test_scope_limits_dependency_parsers(self):
+        self.pub()
+        self.write("android/app/gradle.lockfile", "org.example:lib:1.2.3=releaseRuntimeClasspath\n")
+        self.write("ios/Podfile.lock", "PODS:\n  - Demo (1.0.0)\nSPEC REPOS:\n  trunk:\n    - Demo\nSPEC CHECKSUMS:\n  Demo: abc\n")
+        android = Scan(self.root, {"required_platforms": ["android"]}).inventory()
+        ios = Scan(self.root, {"required_platforms": ["ios"]}).inventory()
+        self.assertEqual({d.ecosystem for d in android.dependencies}, {"Maven"})
+        self.assertEqual({d.ecosystem for d in ios.dependencies}, {"CocoaPods"})
 
 
 if __name__ == "__main__":

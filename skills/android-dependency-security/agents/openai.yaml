@@ -1,0 +1,4 @@
+interface:
+  display_name: "Android Dependency Security"
+  short_description: "Scan Gradle and Maven supply-chain risks"
+  default_prompt: "Use $android-dependency-security to scan this Android project for Gradle and Maven dependency risks."

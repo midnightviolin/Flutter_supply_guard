@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flutter Dependency Security"
+  short_description: "Scan Flutter dependency supply-chain risks"
+  default_prompt: "Use $flutter-dependency-security to scan this Flutter project for dependency vulnerabilities and supply-chain tampering."

@@ -24,6 +24,8 @@ def main(argv=None):
     parser.add_argument("--save-baseline", type=Path, help="保存候选基线（仅新文件；使用前必须审核）")
     parser.add_argument("--artifacts", type=Path, help="对照项目内制品 SHA-256 清单")
     parser.add_argument("--source-dir", action="append", type=Path, default=[], help="额外扫描已下载的依赖源码目录，可重复")
+    parser.add_argument("--scope", action="append", choices=("flutter", "android", "ios"),
+                        help="只要求检查指定平台；可重复。默认根据工程目录自动判断")
     parser.add_argument("--json", type=Path, dest="output", help="写入 JSON 报告（仅新文件）")
     parser.add_argument("--fail-on", choices=LEVELS, default="high")
     parser.add_argument("--allow-incomplete", action="store_true", help="显式允许覆盖不足通过；高风险仍阻断")
@@ -35,6 +37,9 @@ def main(argv=None):
         if len(outputs) != len(set(outputs)) or any(p.exists() for p in outputs):
             raise ValueError("输出路径必须互不相同且不存在，以保护已有文件")
         policy = mapping(json.loads(read_text(args.policy))) if args.policy else {}
+        if args.scope:
+            policy = dict(policy)
+            policy["required_platforms"] = sorted(set(args.scope))
         scan = Scan(args.project, policy).inventory()
         if args.source_dir:
             scan_sources(scan, args.source_dir)

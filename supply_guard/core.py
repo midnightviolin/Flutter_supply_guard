@@ -290,8 +290,10 @@ class Scan:
                 self.add("GRADLE_TRUST_BYPASS", "medium", "存在跳过制品校验的 trust 规则，请审核范围", file)
 
     def inventory(self):
+        scope = set(self.policy["required_platforms"]) if "required_platforms" in self.policy else None
         if not (self.root / "pubspec.yaml").is_file():
-            self.gap("目标根目录缺少 pubspec.yaml")
+            if scope is None or "flutter" in scope:
+                self.gap("目标根目录缺少 pubspec.yaml")
         found = {"flutter": 0, "android": 0, "ios": 0}
         for directory, dirs, names in os.walk(self.root, followlinks=False,
                                               onerror=lambda e: self.gap(f"目录读取失败: {e.filename}")):
@@ -301,17 +303,35 @@ class Scan:
                 file = path.relative_to(self.root).as_posix()
                 parser = None
                 platform = None
+                script_platform = None
                 if name == "pubspec.lock":
                     parser, platform = self.pub, "flutter"
+                    script_platform = "flutter"
                 elif name == "Podfile.lock":
                     parser, platform = self.pods, "ios"
+                    script_platform = "ios"
                 elif name == "gradle.lockfile" or name.endswith(".lockfile") and "dependency-locks" in path.parts:
                     parser, platform = self.gradle, "android"
                 elif name == "Package.resolved":
                     parser, platform = self.swift, "ios"
+                    script_platform = "ios"
+                elif name == "verification-metadata.xml":
+                    script_platform = "android"
                 script = (name in {"pubspec.yaml", "pubspec_overrides.yaml", "Podfile", "gradle.properties"}
                           or name.endswith((".gradle", ".gradle.kts", ".podspec", ".podspec.json")))
+                if name in {"pubspec.yaml", "pubspec_overrides.yaml"}:
+                    script_platform = "flutter"
+                elif name == "Podfile" or name.endswith((".podspec", ".podspec.json")):
+                    script_platform = "ios"
+                elif name == "gradle.properties" or name.endswith((".gradle", ".gradle.kts")):
+                    script_platform = "android"
+                if scope and platform not in scope:
+                    parser = None
+                if scope and script_platform not in scope:
+                    script = False
                 if not parser and not script and name != "verification-metadata.xml":
+                    continue
+                if scope and script_platform not in scope and name == "verification-metadata.xml":
                     continue
                 if path.is_symlink():
                     self.gap("跳过符号链接文件", file)
@@ -330,8 +350,11 @@ class Scan:
                         self.verification(path, file)
                 except (OSError, ValueError, TypeError, KeyError, StopIteration, ET.ParseError, yaml.YAMLError) as exc:
                     self.gap(f"文件解析失败: {type(exc).__name__}: {exc}", file)
-        required = set(self.policy.get("required_platforms", ["flutter"]))
-        required.update(p for p in ("android", "ios") if (self.root / p).exists())
+        if "required_platforms" in self.policy:
+            required = set(self.policy["required_platforms"])
+        else:
+            required = {"flutter"}
+            required.update(p for p in ("android", "ios") if (self.root / p).exists())
         for platform, count in found.items():
             self.coverage[platform] = {"lockfiles": count, "required": platform in required}
             if platform in required and not count:

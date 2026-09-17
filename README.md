@@ -1,121 +1,137 @@
 # Flutter Supply Guard
 
-Flutter 工程依赖供应链检查工具，支持 Flutter/Dart Pub、Android Maven/Gradle、iOS CocoaPods 和 SwiftPM。Python 3.10+，适合本地检查和 CI 门禁。
+[中文文档](README_CN.md)
 
-扫描只读取工程文件，不运行 `pub get`、Gradle、CocoaPods、Podfile 或依赖安装脚本。默认联网查询 OSV 与 pub.dev；只发送包坐标或 Git commit，不上传源码。私有工程可先使用 `--offline`。
+Flutter Supply Guard is a read-only dependency supply-chain checker for Flutter/Dart Pub, Android Maven/Gradle, iOS CocoaPods, and Swift Package Manager projects. It is designed for local reviews and CI gates.
 
-## 快速使用
+The scanner reads project files and does not run `flutter pub get`, Gradle, CocoaPods, Podfiles, Podspecs, or dependency installation scripts. Online scans query OSV and pub.dev using package coordinates, versions, or Git commits; project source code is not uploaded. Use `--offline` for private or disconnected environments, and keep the resulting coverage gaps visible.
 
-在本工具目录运行：
+## Installation
+
+Python 3.10 or newer is required.
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
-
-# 在线扫描真实 Flutter 工程，输出路径应为新文件
-.venv/bin/flutter-supply-guard /path/to/flutter_project --json reports/scan-001.json
-
-# 离线检查来源、版本、脚本和锁文件
-.venv/bin/python -m supply_guard /path/to/flutter_project --offline
-
-# 使用组织来源策略、禁用清单和 iOS 等生态的精确版本情报
-.venv/bin/python -m supply_guard /path/to/flutter_project \
-  --policy examples/policy.json --advisories examples/advisories.json
 ```
 
-示例清单中的包名和情报是**虚构测试数据**，没有预装真实的恶意库黑名单。请替换为组织审核过的情报；实时公开情报由 OSV 提供。
+Run the CLI with either the installed entry point or the Python module:
 
-## 检查范围
+```bash
+.venv/bin/flutter-supply-guard /path/to/flutter_project
+.venv/bin/python -m supply_guard /path/to/flutter_project
+```
 
-| 生态 | 依赖清单 | 检查内容 |
+## Quick start
+
+Scan a Flutter app and its native platforms:
+
+```bash
+.venv/bin/flutter-supply-guard /path/to/flutter_project \
+  --scope flutter --scope android --scope ios \
+  --json /tmp/flutter-dependency-security.json
+```
+
+Run an offline scan of lockfiles, sources, and configuration:
+
+```bash
+.venv/bin/flutter-supply-guard /path/to/flutter_project \
+  --offline --json /tmp/flutter-dependency-security-offline.json
+```
+
+Use organization policy and exact-version advisory data:
+
+```bash
+.venv/bin/flutter-supply-guard /path/to/flutter_project \
+  --policy examples/policy.json \
+  --advisories examples/advisories.json
+```
+
+The advisory and deny-list files under `examples/` contain fictional demonstration data. Replace them with reviewed organization intelligence before using them as a security control.
+
+## Scope modes
+
+The same checker can inspect a complete Flutter app or a native project independently:
+
+| Scope | Main inputs | What it checks |
 | --- | --- | --- |
-| Flutter / Dart | 各层级 `pubspec.lock` | 包括锁文件内传递依赖；Hosted 来源、SHA-256 格式及官方元数据对照、Git 提交固定、路径依赖、覆盖声明、OSV |
-| Android | `gradle.lockfile`、旧式 `dependency-locks/*.lockfile` | Maven 精确版本、OSV、动态版本、仓库 URL、远程脚本、校验元数据结构及弱化配置 |
-| iOS CocoaPods | `Podfile.lock` | 包括传递 Pod；合并 subspec、来源仓库、Git commit、本地 Pod、安装脚本、组织情报 |
-| iOS SwiftPM | `Package.resolved` v1/v2/v3 | 依赖来源、固定 commit、OSV commit 查询、组织情报 |
-| 已下载源码 | 显式 `--source-dir` | 下载执行、动态执行和安装脚本的启发式检查，记录所检查文件 SHA-256 供基线比较 |
-| 本地制品 | 显式 `--artifacts` | 实际读取 AAR/JAR/ZIP/Framework 等文件并对照审核过的 SHA-256 |
+| `flutter` | `pubspec.lock`, `pubspec.yaml` | Transitive Pub dependencies, hosted hashes, registry sources, Git commits, path dependencies, overrides, and OSV |
+| `android` | Gradle lockfiles, Gradle configuration, verification metadata | Maven versions, repositories, dynamic versions, remote scripts, Gradle verification, and OSV |
+| `ios` | `Podfile.lock`, `Podfile`, `Package.resolved`, Podspecs | CocoaPods and SwiftPM sources, revisions, local Pods, install hooks, remote binary downloads, and organization advisories |
 
-Gradle/Ruby 是可执行语言，静态解析不能保证得到所有依赖；本工具以**实际锁文件**为依赖清单，不把 `build.gradle` 中声明的直接依赖当作完整依赖树。Flutter SDK 依赖不按 Pub 包查询。私有 Pub 包不以同名公有包冒充查询结果。
+Use the focused skills when the project is native-only:
 
-OSV 当前 schema 包含 Pub/Maven，但没有标准 CocoaPods 生态。普通 Pod 使用组织精确版本情报；有完整 Git commit 的 Pod 和 SwiftPM 包可查询 OSV commit。无可查询坐标时会显示覆盖缺口。加载组织情报不会自动消除这一公开情报缺口；清单未命中也不能证明无漏洞。
+- `$flutter-dependency-security` for Flutter apps and combined Flutter/Android/iOS checks.
+- `$android-dependency-security` for standalone Android projects.
+- `$ios-dependency-security` for standalone iOS projects.
 
-## 让三端依赖清单完整
+The skill definitions are in `skills/`. The platform-specific guidance is in `skills/flutter-dependency-security/references/`.
 
-先在可信隔离环境准备工程解析结果，再扫描。首次解析可能运行插件或下载第三方内容，建议使用无发布凭据、无签名密钥的隔离构建环境。
+## Additional source and artifact checks
 
-Flutter 应将 `pubspec.lock` 纳入版本管理；CI 可在审核后使用 `flutter pub get --enforce-lockfile`。此工具会检查锁文件，但不证明它与当前 `pubspec.yaml` 完全一致。
-
-Android 需要开启 Gradle dependency locking，并为实际构建的所有 configuration / variant 写入锁文件。示意配置（按项目 Gradle DSL 调整）：
-
-```groovy
-allprojects {
-    dependencyLocking {
-        lockAllConfigurations()
-    }
-}
-```
-
-在可信环境对实际构建任务使用 `--write-locks`，再审核锁文件。构建插件和 `buildscript` 可能需要额外锁定；工具不会自动修改或运行 Gradle。所有需要发布的 variant 都应覆盖，单一 debug 配置不足以代表 release。
-
-Gradle 的 `gradle/verification-metadata.xml` 应在可信环境生成并独立审核 SHA-256/签名，CI 强制使用 strict verification。工具检查 XML 结构与部分弱化设置，但不验证 Gradle 缓存，也不证明所有制品都被元数据覆盖或构建时已启用校验。不要把从未知来源首次下载得到的哈希直接批准为可信。
-
-iOS 应保留审核过的 `Podfile.lock` / `Package.resolved`。`SPEC CHECKSUMS` 是 Podspec 指纹，**不是下载制品的哈希**。原生库的二进制需另外提供制品清单。
-
-## 防止同版本被替换
-
-先对可信版本生成候选基线，审核后提交到版本管理：
+The scanner does not automatically inspect every package cache. Pass downloaded dependency directories explicitly:
 
 ```bash
-.venv/bin/python -m supply_guard /path/to/flutter_project \
-  --save-baseline baseline.candidate.json
-
-# 后续检查对照审核通过的基线
-.venv/bin/python -m supply_guard /path/to/flutter_project \
-  --baseline baseline.approved.json --json reports/scan-002.json
-```
-
-新增或升级依赖为 medium；同版本来源、commit 或指纹变化为 high。基线生成只是记录现状，即使扫描失败也可以输出候选文件，绝不表示已审核通过。保护基线/策略文件的修改权限，避免与投毒依赖一起被自动批准。
-
-可以显式扫描已下载依赖目录（本工具不自动读取用户的全部缓存）：
-
-```bash
-.venv/bin/python -m supply_guard /path/to/flutter_project \
+.venv/bin/flutter-supply-guard /path/to/flutter_project \
   --source-dir /path/to/downloaded/flutter_plugin \
-  --source-dir /path/to/downloaded/native_library \
-  --baseline baseline.approved.json
+  --source-dir /path/to/ios/Pods \
+  --json /tmp/dependency-security.json
 ```
 
-建立基线和后续扫描要使用相同的 `--source-dir` 顺序及范围。所检查的源码文件增加、改变或消失会阻断。符号链接文件会报告跳过；不遍历符号链接目录；默认排除 `.git`、`.venv`、`build`、`node_modules`、`.gradle`、`Pods`、`.symlinks`、`.dart_tool` 子目录。可把具体包目录作为 `--source-dir` 根目录。源码检查只涵盖代码中列出的文本扩展名，其他资源或二进制使用制品清单。
+Source scanning uses static heuristics for direct download-and-execute patterns, dynamic execution, install hooks, remote Gradle scripts, insecure repositories, and dependency overrides. It does not execute scripts or prove that a binary is safe.
 
-制品清单格式为项目内相对路径到 SHA-256 的 JSON 映射，例如：
+For AAR, JAR, Framework, XCFramework, ZIP, or other local artifacts, provide an independently reviewed SHA-256 manifest. Paths must be relative to the project root:
 
 ```json
 {
-  "vendor/library.aar": "替换成从可信来源独立核实的64位十六进制SHA256"
+  "vendor/library.aar": "64 hexadecimal SHA-256 characters"
 }
 ```
 
 ```bash
-.venv/bin/python -m supply_guard /path/to/flutter_project --artifacts approved-artifacts.json
+.venv/bin/flutter-supply-guard /path/to/flutter_project \
+  --artifacts approved-artifacts.json
 ```
 
-哈希不符返回 critical；缺失制品返回 high；路径越界拒绝。只校验清单中列出的文件，不自动发现未列出的二进制。Pub 官方对照仅比较锁文件与发布元数据，不下载归档、不证明本地缓存未被篡改；缓存源码可用基线检查。
+Only listed files are checked. A missing artifact is high severity; a digest mismatch is critical severity. An approved hash must come from an independently trusted source; do not approve a hash generated from an untrusted first download.
 
-## CI 门禁与报告
+## Baselines and same-version replacement
 
-退出码：
-
-- `0`：未命中阈值，且没有未允许的覆盖缺口；不表示绝对安全。
-- `1`：存在达到 `--fail-on` 阈值的问题，默认 `high`。
-- `2`：解析/配置/网络错误或覆盖不足，且没有优先返回的阻断风险。
-
-`--fail-on medium` 可将新增依赖、版本升级、安装脚本入口等纳入审核门禁。`--allow-incomplete` 显式允许情报覆盖不足、离线等缺口通过，报告仍保留 `incomplete`；不要在严格 CI 中默认打开。API 失败会报告错误，不会变成“零漏洞”。未知文本严重性按 high 处理，原始 CVSS 信息保留在 JSON 中；不自行猜算 CVSS 分数。
-
-通用 CI 步骤（工程解析结果必须预先生成）：
+Generate a candidate baseline from a trusted checkout, review it, and commit only the approved result:
 
 ```bash
-python -m pip install /path/to/security-check
+.venv/bin/flutter-supply-guard /path/to/flutter_project \
+  --save-baseline baseline.candidate.json
+
+.venv/bin/flutter-supply-guard /path/to/flutter_project \
+  --baseline baseline.approved.json \
+  --json /tmp/dependency-security-follow-up.json
+```
+
+New or upgraded dependencies are reported for review. A change to the source, commit, package fingerprint, or checked source file is higher risk. A candidate baseline records state; it does not certify that state as safe. Protect baselines, policies, advisory data, and artifact manifests from changes made by dependency updates.
+
+## Lockfile expectations
+
+Flutter applications should commit `pubspec.lock` and use an enforce-lockfile workflow in CI after reviewing the resolved dependencies. The scanner does not run Pub's solver and reports when declared dependencies are absent from the local lockfile.
+
+Android projects should enable Gradle dependency locking for every release/debug configuration and variant that is built. They should also commit reviewed `gradle/verification-metadata.xml` containing SHA-256 and/or signature verification rules, with strict verification enabled in CI. The scanner does not run Gradle and cannot prove that every build configuration is covered when lockfiles or verification metadata are missing.
+
+iOS projects should commit reviewed `Podfile.lock` and `Package.resolved`. CocoaPods `SPEC CHECKSUMS` identify Podspec contents; they do not prove the integrity of downloaded source code, Frameworks, or XCFrameworks. Remote binary downloads and local Podspec `prepare_command` hooks need independent artifact hashes or signatures.
+
+## CI behavior
+
+Exit codes are:
+
+- `0`: no finding reaches `--fail-on`, and no disallowed coverage gap remains.
+- `1`: a finding reaches the selected threshold; the default threshold is `high`.
+- `2`: parsing, configuration, network, or coverage errors remain without a higher-priority blocking finding.
+
+Use `--fail-on medium` to require review of new dependencies, upgrades, and install hooks. `--allow-incomplete` explicitly permits incomplete intelligence or offline coverage, but the report remains marked `incomplete`; do not enable it by default in strict CI.
+
+Example CI invocation:
+
+```bash
+python -m pip install /path/to/flutter-supply-guard
 flutter-supply-guard "$PROJECT_DIR" \
   --policy /path/to/approved-policy.json \
   --baseline /path/to/approved-baseline.json \
@@ -123,21 +139,23 @@ flutter-supply-guard "$PROJECT_DIR" \
   --json "$RUN_REPORT_DIR/dependency-security.json"
 ```
 
-CI 请在失败时仍归档 JSON 报告，并避免用 `|| true` 吞掉退出码。输出文件必须不存在，防止覆盖锁文件、策略或已有证据。报告含依赖来源 URL 和文件名，应按内部数据管理；来源 URL 不应嵌入凭据。
+Archive the JSON report when CI fails. Do not use `|| true` to discard the exit code. Output files must be new files so a scan cannot overwrite a lockfile, policy, baseline, or existing evidence.
 
-## 能力边界
+## Interpretation and limitations
 
-此工具提供可运行的静态供应链检查和 CI 门禁，不能保证识别所有未知投毒。仓库主机在白名单中不代表仓库作者可信；没有已知漏洞不代表没有恶意逻辑。脚本规则是人工复核线索，注释、文档 URL 等也可能误报。未进行动态沙箱执行、二进制逆向、签名信任链验证、维护者身份分析或完整行为分析。
+`SOURCE_UNTRUSTED` means that a source host is outside the configured allow-list; it is not proof that the host or package is malicious. Review private registries, mirrors, Gitee repositories, JitPack, and internal Maven/CocoaPods sources against organization policy.
 
-检测结果应结合依赖升级审核、可信镜像、隔离构建、凭据最小化、制品签名和锁文件保护使用。
+Known-vulnerability results come from the available advisory data. CocoaPods package names generally do not have a standard OSV ecosystem, so ordinary Pods may produce coverage gaps. Private Pub registries cannot be validated against public pub.dev metadata. A clean result does not rule out unknown malicious behavior, compromised maintainers, or a replaced binary when no baseline or artifact manifest is available.
 
-## 开发验证
+The tool does not perform dynamic sandbox execution, binary reverse engineering, maintainer identity analysis, signature trust-chain validation, or complete behavioral analysis. Combine it with isolated dependency resolution, least-privilege build credentials, reviewed mirrors, artifact signing, protected lockfiles, and human review of high-risk install scripts.
+
+## Development checks
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python -m compileall -q supply_guard
 ```
 
-测试使用临时工程和模拟情报，不下载或执行恶意样本。
+The test suite uses temporary projects and mocked intelligence. It does not download or execute malicious samples.
 
-接口与格式依据：[OSV Query API](https://google.github.io/osv.dev/post-v1-query/)、[OSV schema 生态定义](https://ossf.github.io/osv-schema/)、[Dart 锁文件与内容哈希](https://dart.dev/tools/pub/packages)、[pub.dev API](https://pub.dev/help/api)、[Gradle dependency verification](https://docs.gradle.org/current/userguide/dependency_verification.html)、[CocoaPods Podfile](https://guides.cocoapods.org/using/the-podfile.html)。
+The implementation follows the public formats and APIs documented by [OSV Query API](https://google.github.io/osv.dev/post-v1-query/), [OSV schema](https://ossf.github.io/osv-schema/), [Dart Pub packages](https://dart.dev/tools/pub/packages), [pub.dev API](https://pub.dev/help/api), [Gradle dependency verification](https://docs.gradle.org/current/userguide/dependency_verification.html), and [CocoaPods Podfiles](https://guides.cocoapods.org/using/the-podfile.html).
